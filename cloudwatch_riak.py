@@ -17,16 +17,14 @@
 import httplib
 import json
 import datetime
-
+import boto
 import socket
 
 #import aws keys, you can do it this way or through env variables (check boto doc)
 #or through any means you want. You decide.
-aws = open('path_to_aws_key_file')
-aws_key = aws.readline().strip()
-aws_secret = aws.readline().strip()
-
-import boto
+aws = open('awscreds.conf')
+aws_key = aws.readline().split('=')[1].strip()
+aws_secret = aws.readline().split('=')[1].strip()
 c = boto.connect_cloudwatch(aws_access_key_id=aws_key, aws_secret_access_key=aws_secret)
 
 #get stats
@@ -40,42 +38,34 @@ def getstats(host='localhost', port=8098):
     js = json.loads(response_body)
     return js
 
-
 def publish(stats):
-    tstamp = datetime.time()
+    metrics = [
+      ('Microseconds',
+       [('node_get_fsm_time_95', int(stats['node_get_fsm_time_95'])),
+        ('node_get_fsm_time_99', int(stats['node_get_fsm_time_99'])),
+        ('node_put_fsm_time_95', int(stats['node_put_fsm_time_95'])),
+        ('node_put_fsm_time_99', int(stats['node_put_fsm_time_99']))
+       ]),
+      ('Count/Second',
+       [('node_gets', int(stats['node_gets'])/60),
+        ('node_puts', int(stats['node_puts'])/60)
+       ]),
+      ('Megabytes',
+       [('mem_total_mb', int(stats['mem_total'])/(1024*1024)),
+        ('mem_alloc_mb', int(stats['mem_allocated'])/(1024*1024))
+       ]),
+      ('Percent',[
+        ('mem_alloc_%', int(int(stats['mem_allocated'])*100 / float(stats['mem_total'])))
+       ]),
+      ('Count',[('nodes', len(stats['connected_nodes']))])
+    ]
+    ts = datetime.time()
     hostname = socket.gethostname()
-
-    #boto does not like 0
-    #boto 2.0rc1 has a bug with dimensions, currently (06/29/2011) fixed in trunk.
-    #when version > 2.0.rc1 is released, remove the +1
-
-    for metric in ['node_put_fsm_time_mean', 'node_get_fsm_time_mean']:
-        c.put_metric_data('riak', metric,
-                          value=int(stats[metric])+1,
-                          timestamp=tstamp,
-                          dimensions={'Hostname':hostname},
-                          unit='Microseconds')
-
-    for metric in ['node_gets', 'node_puts']:
-        value = int(metric)/60 #riak spits out 1min stats
-        c.put_metric_data('riak', metric,
-                          value=value+1,
-                          timestamp=tstamp,
-                          dimensions={'Hostname':hostname},
-                          unit='Count/Second')
-
-    for metric in ['mem_total', 'mem_allocated']:
-        c.put_metric_data('riak', metric,
-                          value=float(stats[metric]),
-                          timestamp=tstamp,
-                          dimensions={'Hostname':hostname},
-                          unit='Count')
-
-    c.put_metric_data('riak', 'mem_allocated_%',
-                      value=int(float(stats['mem_allocated'])*100 / float(stats['mem_total'])),
-                      timestamp=tstamp,
-                      dimensions={'Hostname':hostname},
-                      unit='Percent')
+    dims={ 'Hostname':hostname }
+    for munit,mtrcs in metrics:
+      for mname, mval in mtrcs:
+        #print("{0} = {1} {2}".format(mname, mval, munit))
+        c.put_metric_data('Riak', mname, timestamp=ts, dimensions=dims, value=mval, unit=munit)
 
 if __name__ == '__main__':
     #seems to work on AWS, if you bind to the internal IP, change at will
